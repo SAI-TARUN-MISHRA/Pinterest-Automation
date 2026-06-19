@@ -1,0 +1,15 @@
+# Local environment and cache
+__pycache__/
+*.pyc
+
+# Local secrets & configs (never upload to GitHub!)
+token.json
+client_secrets.json
+config.json
+amazon_links.txt
+amazon_links_history.txt
+
+# Temporary rendering outputs
+temp/
+output/
+assets/fonts/

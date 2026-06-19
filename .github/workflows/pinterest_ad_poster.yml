@@ -1,0 +1,101 @@
+name: Pinterest Fashion Affiliate Poster
+
+on:
+  schedule:
+    # 8:00 AM IST is 2:30 AM UTC. 9:00 PM IST is 3:30 PM UTC.
+    - cron: '30 2,15 * * *'
+    # Weekly Sunday Trend Finder at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      amazon_url:
+        description: 'Manual Amazon Link (Overrides queue. Leave blank to run next in queue)'
+        required: false
+        default: ''
+      run_trend_finder:
+        description: 'Check to run Trend Finder instead of posting'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-poster:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-name: '3.10'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgbm-dev libnss3 libnspr4 libgconf-2-4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2
+
+      - name: Install pip packages
+        run: |
+          pip install requests beautifulsoup4 google-genai openai pillow playwright python-dotenv
+          playwright install chromium
+
+      - name: Create fallback empty logs/queue if missing
+        run: |
+          touch amazon_links.txt
+          touch amazon_links_history.txt
+
+      - name: Run Trend Finder
+        # Run if triggered by weekly cron, or manually selected
+        if: |
+          (github.event_name == 'schedule' && github.event.schedule == '0 0 * * 0') ||
+          (github.event_name == 'workflow_dispatch' && github.inputs.run_trend_finder == 'true')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Write secrets variables temporary to config.json
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":true,\"amazon_associates_tag\":\"designforyo0e-21\",\"niche\":\"fashion\"}" > config.json
+          python amazon_trend_finder.py
+
+      - name: Run Ad Poster
+        # Run if posting cron, or manually triggered (and not run_trend_finder)
+        if: |
+          (github.event_name == 'schedule' && github.event.schedule != '0 0 * * 0') ||
+          (github.event_name == 'workflow_dispatch' && github.inputs.run_trend_finder != 'true')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PINTEREST_CLIENT_ID: ${{ secrets.PINTEREST_CLIENT_ID }}
+          PINTEREST_CLIENT_SECRET: ${{ secrets.PINTEREST_CLIENT_SECRET }}
+          PINTEREST_REFRESH_TOKEN: ${{ secrets.PINTEREST_REFRESH_TOKEN }}
+          PINTEREST_BOARD_ID: ${{ secrets.PINTEREST_BOARD_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Construct temporary config.json with env secrets
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":true,\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"}}" > config.json
+          
+          # Check if URL override is provided
+          if [ -n "${{ github.event.inputs.amazon_url }}" ]; then
+            python run_pinterest_advertiser.py --url "${{ github.event.inputs.amazon_url }}"
+          else
+            python run_pinterest_advertiser.py
+          fi
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add amazon_links.txt amazon_links_history.txt
+          # Commit only if files have changed to avoid action errors
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update Amazon links queue and history [skip ci]"
+          git push
