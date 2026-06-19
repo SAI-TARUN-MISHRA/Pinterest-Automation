@@ -94,7 +94,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add amazon_links.txt amazon_links_history.txt
+          git add -f amazon_links.txt amazon_links_history.txt
           # Commit only if files have changed to avoid action errors
           git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update Amazon links queue and history [skip ci]"
           git push
