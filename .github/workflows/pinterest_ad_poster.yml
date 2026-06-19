@@ -8,8 +8,8 @@ on:
     - cron: '0 4 * * *'
     - cron: '30 13 * * *'
     - cron: '0 15 * * *'
-    # Weekly Sunday Trend Finder at 00:00 UTC
-    - cron: '0 0 * * 0'
+    # Daily Trend Finder at 00:00 UTC (5:30 AM IST) to add 5 new links daily
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       amazon_url:
@@ -56,9 +56,9 @@ jobs:
           touch amazon_links_history.txt
 
       - name: Run Trend Finder
-        # Run if triggered by weekly cron, or manually selected
+        # Run if triggered by daily cron, or manually selected
         if: |
-          (github.event_name == 'schedule' && github.event.schedule == '0 0 * * 0') ||
+          (github.event_name == 'schedule' && github.event.schedule == '0 0 * * *') ||
           (github.event_name == 'workflow_dispatch' && github.inputs.run_trend_finder == 'true')
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -72,7 +72,7 @@ jobs:
       - name: Run Ad Poster
         # Run if posting cron, or manually triggered (and not run_trend_finder)
         if: |
-          (github.event_name == 'schedule' && github.event.schedule != '0 0 * * 0') ||
+          (github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') ||
           (github.event_name == 'workflow_dispatch' && github.inputs.run_trend_finder != 'true')
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
