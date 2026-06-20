@@ -73,7 +73,8 @@ class AmazonScraper:
             
             # Create a mobile device context to bypass robot check CAPTCHAs and load faster
             iphone = p.devices['iPhone 14 Pro']
-            context = browser.new_context(**iphone, user_agent=user_agent)
+            device_config = {**iphone, 'user_agent': user_agent}
+            context = browser.new_context(**device_config)
             
             page = context.new_page()
             
