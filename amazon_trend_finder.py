@@ -108,6 +108,66 @@ def find_trending_products(tag, num_links=5):
     location_code = "110001" if domain == "amazon.in" else "10001"
     print(f"Using marketplace domain: {domain} with delivery code: {location_code}")
     
+    # 1. Try Gemini with Google Search Grounding first (Highly reliable on cloud, bypasses CAPTCHA)
+    print("Attempting to find trending products using Gemini with Google Search Grounding...")
+    config = load_config()
+    gemini_key = os.environ.get("GEMINI_API_KEY") or config.get("gemini_api_key", "")
+    
+    if gemini_key and not gemini_key.startswith("YOUR_"):
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=gemini_key)
+            prompt = f"""
+            Find {num_links + 5} real, active product URLs for trending women's fashion items (related to '{keyword}') on Amazon {domain} (www.{domain}).
+            Format the output as a valid JSON list of objects, where each object has "title" and "url".
+            Return ONLY the raw JSON list, no markdown code block or extra explanation text.
+            """
+            
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                )
+            )
+            
+            # Clean and parse the response text to find the JSON array
+            text_response = response.text.strip()
+            if "```json" in text_response:
+                text_response = text_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in text_response:
+                text_response = text_response.split("```")[1].split("```")[0].strip()
+                
+            try:
+                products = json.loads(text_response)
+                if isinstance(products, list):
+                    count = 0
+                    for p in products:
+                        if count >= num_links:
+                            break
+                        url_val = p.get("url", "")
+                        asin = extract_asin(url_val)
+                        if asin and asin not in already_processed:
+                            # Construct correct affiliate link
+                            aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
+                            new_affiliate_links.append(aff_url)
+                            already_processed.add(asin)
+                            print(f"Found new fashion item via Gemini Grounding: {asin} -> {aff_url}")
+                            count += 1
+                            
+                    if new_affiliate_links:
+                        print(f"Successfully retrieved {len(new_affiliate_links)} products using Gemini Grounding.")
+                        return new_affiliate_links
+            except Exception as parse_err:
+                print(f"Failed to parse Gemini response as JSON: {parse_err}")
+                print(f"Raw response: {text_response}")
+        except Exception as api_err:
+            print(f"Gemini Search Grounding method failed: {api_err}")
+            
+    # 2. Fallback to Playwright browser scraper if Gemini Grounding failed
+    print("Falling back to Playwright browser scraper...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -118,71 +178,74 @@ def find_trending_products(tag, num_links=5):
         page = context.new_page()
         page.add_init_script("delete navigator.webdriver")
         
-        # 1. Establish session and set delivery location
-        print(f"Navigating to Amazon ({domain}) to set location...")
-        page.goto(f"https://www.{domain}", wait_until="load")
-        time.sleep(2)
-        
-        loc_btn = page.query_selector("#nav-global-location-popover-link")
-        if loc_btn:
-            loc_btn.click()
+        try:
+            # 1. Establish session and set delivery location
+            print(f"Navigating to Amazon ({domain}) to set location...")
+            page.goto(f"https://www.{domain}", wait_until="load")
             time.sleep(2)
-            zip_input = page.query_selector("#GLUXZipUpdateInput")
-            if zip_input:
-                zip_input.fill(location_code)
-                time.sleep(1)
-                apply_btn = page.query_selector("#GLUXZipUpdate")
-                if apply_btn:
-                    apply_btn.click()
-                    time.sleep(2)
-                    try:
-                        page.click("text=Continue", timeout=2000)
-                    except Exception:
-                        try:
-                            page.click(".a-popover-footer input", timeout=2000)
-                        except Exception:
-                            pass
-                    time.sleep(2)
-                    page.reload()
-                    time.sleep(2)
-                    
-        # 2. Search for the keyword
-        search_url = f"https://www.{domain}/s?k={urllib.parse.quote(keyword)}"
-        print(f"Loading search page: {search_url}")
-        page.goto(search_url, wait_until="load")
-        time.sleep(3)
-        
-        # 3. Parse organic results
-        results = page.query_selector_all("div[data-component-type='s-search-result']")
-        print(f"Discovered {len(results)} search result cards.")
-        
-        count = 0
-        for res in results:
-            if count >= num_links:
-                break
-                
-            # Skip sponsored
-            sponsored = res.query_selector(".puis-sponsored-label-text")
-            if sponsored:
-                continue
-                
-            # Get ASIN directly from the element attribute
-            asin = res.get_attribute("data-asin")
-            if not asin or len(asin) != 10:
-                continue
-                
-            # Check for duplicates
-            if asin in already_processed:
-                continue
-                
-            # Construct affiliate link
-            aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
-            new_affiliate_links.append(aff_url)
-            already_processed.add(asin)
-            print(f"Found new fashion item ASIN: {asin} -> {aff_url}")
-            count += 1
             
-        browser.close()
+            loc_btn = page.query_selector("#nav-global-location-popover-link")
+            if loc_btn:
+                loc_btn.click()
+                time.sleep(2)
+                zip_input = page.query_selector("#GLUXZipUpdateInput")
+                if zip_input:
+                    zip_input.fill(location_code)
+                    time.sleep(1)
+                    apply_btn = page.query_selector("#GLUXZipUpdate")
+                    if apply_btn:
+                        apply_btn.click()
+                        time.sleep(2)
+                        try:
+                            page.click("text=Continue", timeout=2000)
+                        except Exception:
+                            try:
+                                page.click(".a-popover-footer input", timeout=2000)
+                            except Exception:
+                                pass
+                        time.sleep(2)
+                        page.reload()
+                        time.sleep(2)
+                        
+            # 2. Search for the keyword
+            search_url = f"https://www.{domain}/s?k={urllib.parse.quote(keyword)}"
+            print(f"Loading search page: {search_url}")
+            page.goto(search_url, wait_until="load")
+            time.sleep(3)
+            
+            # 3. Parse organic results
+            results = page.query_selector_all("div[data-component-type='s-search-result']")
+            print(f"Discovered {len(results)} search result cards.")
+            
+            count = 0
+            for res in results:
+                if count >= num_links:
+                    break
+                    
+                # Skip sponsored
+                sponsored = res.query_selector(".puis-sponsored-label-text")
+                if sponsored:
+                    continue
+                    
+                # Get ASIN directly from the element attribute
+                asin = res.get_attribute("data-asin")
+                if not asin or len(asin) != 10:
+                    continue
+                    
+                # Check for duplicates
+                if asin in already_processed:
+                    continue
+                    
+                # Construct affiliate link
+                aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
+                new_affiliate_links.append(aff_url)
+                already_processed.add(asin)
+                print(f"Found new fashion item ASIN: {asin} -> {aff_url}")
+                count += 1
+        except Exception as playwright_err:
+            print(f"Playwright scraping error: {playwright_err}")
+        finally:
+            browser.close()
         
     return new_affiliate_links
 
