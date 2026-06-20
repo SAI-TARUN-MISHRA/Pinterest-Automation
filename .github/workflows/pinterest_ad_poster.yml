@@ -61,7 +61,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           # Write secrets variables temporary to config.json
-          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":true,\"amazon_associates_tag\":\"designforyo0e-21\",\"niche\":\"fashion\"}" > config.json
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"amazon_associates_tag\":\"designforyo0e-21\",\"niche\":\"fashion\"}" > config.json
           python amazon_trend_finder.py
 
       - name: Run Ad Poster
@@ -81,7 +81,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           # Construct temporary config.json with env secrets
-          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":true,\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"}}" > config.json
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"}}" > config.json
           
           # Check if URL override is provided
           if [ -n "${{ github.event.inputs.amazon_url }}" ]; then

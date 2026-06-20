@@ -103,6 +103,11 @@ def find_trending_products(tag, num_links=5):
     keyword = random.choice(TREND_KEYWORDS)
     print(f"Selected search trend keyword: '{keyword}'")
     
+    # Determine the correct base domain based on the affiliate tag
+    domain = "amazon.in" if tag.endswith("-21") else "amazon.com"
+    location_code = "110001" if domain == "amazon.in" else "10001"
+    print(f"Using marketplace domain: {domain} with delivery code: {location_code}")
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -113,9 +118,9 @@ def find_trending_products(tag, num_links=5):
         page = context.new_page()
         page.add_init_script("delete navigator.webdriver")
         
-        # 1. Establish session and set ZIP to NY 10001
-        print("Navigating to Amazon to set location...")
-        page.goto("https://www.amazon.com", wait_until="load")
+        # 1. Establish session and set delivery location
+        print(f"Navigating to Amazon ({domain}) to set location...")
+        page.goto(f"https://www.{domain}", wait_until="load")
         time.sleep(2)
         
         loc_btn = page.query_selector("#nav-global-location-popover-link")
@@ -124,7 +129,7 @@ def find_trending_products(tag, num_links=5):
             time.sleep(2)
             zip_input = page.query_selector("#GLUXZipUpdateInput")
             if zip_input:
-                zip_input.fill("10001")
+                zip_input.fill(location_code)
                 time.sleep(1)
                 apply_btn = page.query_selector("#GLUXZipUpdate")
                 if apply_btn:
@@ -142,7 +147,7 @@ def find_trending_products(tag, num_links=5):
                     time.sleep(2)
                     
         # 2. Search for the keyword
-        search_url = f"https://www.amazon.com/s?k={urllib.parse.quote(keyword)}"
+        search_url = f"https://www.{domain}/s?k={urllib.parse.quote(keyword)}"
         print(f"Loading search page: {search_url}")
         page.goto(search_url, wait_until="load")
         time.sleep(3)
@@ -171,7 +176,7 @@ def find_trending_products(tag, num_links=5):
                 continue
                 
             # Construct affiliate link
-            aff_url = f"https://www.amazon.com/dp/{asin}/?tag={tag}"
+            aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
             new_affiliate_links.append(aff_url)
             already_processed.add(asin)
             print(f"Found new fashion item ASIN: {asin} -> {aff_url}")

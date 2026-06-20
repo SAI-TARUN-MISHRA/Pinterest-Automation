@@ -26,6 +26,8 @@ class AmazonScraper:
         """
         from playwright.sync_api import sync_playwright
         
+        user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+        
         # Resolve short amzn.to links to their full form
         resolved_url = url
         if "amzn.to" in url:
@@ -51,10 +53,12 @@ class AmazonScraper:
             "details": ""
         }
         
-        # Clean URL to prevent tracking parameter issues
         parsed_url = urllib.parse.urlparse(resolved_url)
         clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         domain = parsed_url.netloc.lower()
+        
+        # We navigate directly to the resolved URL because natural query parameters help bypass robot checks.
+        target_nav_url = resolved_url
         
         with sync_playwright() as p:
             # Launch chromium with realistic user-agent
@@ -69,7 +73,7 @@ class AmazonScraper:
             
             # Create a mobile device context to bypass robot check CAPTCHAs and load faster
             iphone = p.devices['iPhone 14 Pro']
-            context = browser.new_context(**iphone)
+            context = browser.new_context(**iphone, user_agent=user_agent)
             
             page = context.new_page()
             
@@ -77,59 +81,59 @@ class AmazonScraper:
             page.add_init_script("delete navigator.webdriver")
             
             try:
-                # 1. Establish session cookies by visiting the homepage
-                if "amazon.in" in domain:
-                    print("Navigating to Amazon India homepage to establish location cookies...")
-                    page.goto("https://www.amazon.in", timeout=45000, wait_until="load")
-                    time.sleep(2)
-                else:
-                    print("Navigating to Amazon US homepage to establish location cookies...")
-                    page.goto("https://www.amazon.com", timeout=45000, wait_until="load")
-                    time.sleep(2)
-                
-                # 2. Navigate to product page
-                print(f"Navigating to product page: {clean_url}")
-                page.goto(clean_url, timeout=45000, wait_until="load")
-                time.sleep(3)
+                # Navigate directly to the product page. Visiting the homepage first triggers aggressive bot checks.
+                print(f"Navigating directly to product page: {target_nav_url}")
+                page.goto(target_nav_url, timeout=45000, wait_until="load")
+                time.sleep(4)
                 
                 # Check for "Continue shopping" form and click it to bypass bot wall
-                for _ in range(2):
-                    continue_btn = page.query_selector("text=Continue shopping") or page.query_selector("input[value='Continue shopping']") or page.query_selector("input[type='submit']")
-                    if continue_btn:
-                        print("🤖 Bot verification screen detected. Clicking 'Continue shopping' button...")
-                        continue_btn.click()
-                        time.sleep(4)
-                    else:
-                        break
+                page_title = page.title().strip()
+                is_captcha = "captcha" in page_title.lower() or "robot" in page_title.lower() or page_title.lower() == "amazon.in" or page_title.lower() == "amazon.com"
                 
-                # Take page screenshot
-                screenshot_path = os.path.join(self.temp_dir, "amazon_product_screenshot.png")
-                page.screenshot(path=screenshot_path, full_page=False)
-                result["screenshot_path"] = screenshot_path
-                print(f"Saved product screenshot to {screenshot_path}")
+                if is_captcha:
+                    print("⚠️ Amazon CAPTCHA/Bot wall detected via page title. Attempting to bypass...")
+                    for _ in range(2):
+                        continue_btn = page.query_selector("text=Continue shopping") or page.query_selector("input[value='Continue shopping']") or page.query_selector("input[type='submit']")
+                        if continue_btn:
+                            print("🤖 Bot verification screen detected. Clicking 'Continue shopping' button...")
+                            continue_btn.click()
+                            time.sleep(4)
+                            page_title = page.title().strip()
+                            if not ("captcha" in page_title.lower() or "robot" in page_title.lower() or page_title.lower() == "amazon.in" or page_title.lower() == "amazon.com"):
+                                is_captcha = False
+                                break
+                        else:
+                            break
                 
-                # Extract Title (support both mobile and desktop title elements)
-                title_elem = page.query_selector("#title") or page.query_selector("#productTitle") or page.query_selector(".product-title")
-                if title_elem:
-                    result["title"] = title_elem.inner_text().strip()
+                if is_captcha:
+                    print("❌ Playwright was blocked by CAPTCHA. Skipping screenshot and title parsing so it falls back or fails.")
                 else:
-                    # Fallback to page.title() but strip Amazon branding
-                    page_title = page.title()
-                    if page_title and ":" in page_title:
-                        # e.g. "Amazon.com: Women's Dress..." -> "Women's Dress..."
-                        parts = page_title.split(":", 1)
-                        result["title"] = parts[1].strip()
+                    # Take page screenshot
+                    screenshot_path = os.path.join(self.temp_dir, "amazon_product_screenshot.png")
+                    page.screenshot(path=screenshot_path, full_page=False)
+                    result["screenshot_path"] = screenshot_path
+                    print(f"Saved product screenshot to {screenshot_path}")
+                    
+                    # Extract Title (support both mobile and desktop title elements)
+                    title_elem = page.query_selector("#title") or page.query_selector("#productTitle") or page.query_selector(".product-title")
+                    if title_elem:
+                        result["title"] = title_elem.inner_text().strip()
                     else:
-                        result["title"] = page_title
-                print(f"Product Title: {result['title']}")
-                
-                # Extract Price
-                price_elem = page.query_selector(".a-price .a-offscreen") or page.query_selector("#corePriceDisplay_desktop_feature_div .a-price-whole") or page.query_selector("#corePrice_desktop .a-price-whole") or page.query_selector(".priceToPay")
-                price = None
-                if price_elem:
-                    price = price_elem.inner_text().strip()
-                result["price"] = price if price else ""
-                print(f"Product Price: {result['price']}")
+                        # Fallback to page.title() but strip Amazon branding
+                        if ":" in page_title:
+                            parts = page_title.split(":", 1)
+                            result["title"] = parts[1].strip()
+                        else:
+                            result["title"] = page_title
+                    print(f"Product Title: {result['title']}")
+                    
+                    # Extract Price
+                    price_elem = page.query_selector(".a-price .a-offscreen") or page.query_selector("#corePriceDisplay_desktop_feature_div .a-price-whole") or page.query_selector("#corePrice_desktop .a-price-whole") or page.query_selector(".priceToPay")
+                    price = None
+                    if price_elem:
+                        price = price_elem.inner_text().strip()
+                    result["price"] = price if price else ""
+                    print(f"Product Price: {result['price']}")
                 
                 # Extract main image URL (support mobile #main-image and metadata og:image)
                 img_url = None
@@ -241,6 +245,11 @@ class AmazonScraper:
                 soup = BeautifulSoup(res.text, "lxml" if "lxml" in sys.modules else "html.parser")
                 
                 # Title
+                title = soup.title.string.strip() if soup.title else ""
+                if "captcha" in title.lower() or "robot" in title.lower() or title.lower() == "amazon.in" or title.lower() == "amazon.com":
+                    print("❌ Fallback requests scraper blocked by CAPTCHA.")
+                    return
+                    
                 title_elem = soup.find(id="productTitle")
                 if title_elem:
                     result["title"] = title_elem.get_text().strip()
