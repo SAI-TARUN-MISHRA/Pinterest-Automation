@@ -229,8 +229,8 @@ class AmazonScraper:
                 browser.close()
                 
         # Final fallback if playwright failed and didn't download image
-        if not result["image_path"] and not result["screenshot_path"]:
-            print("⚠️ Playwright scraping failed completely. Trying standard request fallback...")
+        if not result["image_path"]:
+            print("⚠️ Playwright scraping failed to get product image. Trying standard request fallback...")
             self._scrape_fallback(clean_url, result)
             
         return result
