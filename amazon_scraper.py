@@ -108,6 +108,7 @@ class AmazonScraper:
                 
                 if is_captcha:
                     print("❌ Playwright was blocked by CAPTCHA. Skipping screenshot and title parsing so it falls back or fails.")
+                    raise RuntimeError("Playwright was blocked by Amazon CAPTCHA.")
                 else:
                     # Take page screenshot
                     screenshot_path = os.path.join(self.temp_dir, "amazon_product_screenshot.png")
@@ -240,12 +241,63 @@ class AmazonScraper:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         }
+        
+        # Try Google Translate proxy first (Highly effective at bypassing cloud IP CAPTCHAs)
+        try:
+            print("Attempting to crawl via Google Translate Web Proxy...")
+            encoded_url = urllib.parse.quote(url)
+            proxy_url = f"https://translate.google.com/translate?sl=auto&tl=en&u={encoded_url}"
+            
+            res = requests.get(proxy_url, headers=headers, timeout=20)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                
+                # Check for content-frame iframe
+                iframe = soup.find("iframe", id="content-frame") or soup.find("iframe", class_="content-frame")
+                if iframe and iframe.get("src"):
+                    print("Fetching iframe content from proxy...")
+                    iframe_res = requests.get(iframe.get("src"), headers=headers, timeout=20)
+                    if iframe_res.status_code == 200:
+                        soup = BeautifulSoup(iframe_res.text, "html.parser")
+                
+                # Title
+                title_elem = soup.find(id="productTitle") or soup.find(id="title")
+                if title_elem:
+                    result["title"] = title_elem.get_text().strip()
+                    print(f"Proxy scraped Title: {result['title']}")
+                
+                # Price
+                price_elem = soup.find(class_="a-price-whole") or soup.find(class_="a-offscreen") or soup.find(id="priceToPay")
+                if price_elem:
+                    result["price"] = price_elem.get_text().strip()
+                    print(f"Proxy scraped Price: {result['price']}")
+                
+                # Image URL
+                img_url = None
+                img_elem = soup.find(id="landingImage") or soup.find(id="main-image")
+                if img_elem:
+                    img_url = img_elem.get("data-old-hires") or img_elem.get("src")
+                if img_url:
+                    print(f"Proxy scraped Image URL: {img_url}")
+                    img_data = requests.get(img_url, headers=headers, timeout=15).content
+                    image_path = os.path.join(self.temp_dir, "amazon_product_image_proxy.jpg")
+                    with open(image_path, "wb") as f:
+                        f.write(img_data)
+                    result["image_path"] = image_path
+                    result["screenshot_path"] = image_path
+                    print("Proxy download successful!")
+                    return  # Success! Exit fallback function early
+        except Exception as proxy_err:
+            print(f"Google Translate proxy crawler failed: {proxy_err}")
+            
+        # Last resort: Direct requests to Amazon (Usually blocked on cloud IPs)
+        print("Proxy failed or blocked. Trying direct requests as last resort...")
         try:
             res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "lxml" if "lxml" in sys.modules else "html.parser")
+                soup = BeautifulSoup(res.text, "html.parser")
                 
-                # Title
+                # Title check for CAPTCHA
                 title = soup.title.string.strip() if soup.title else ""
                 if "captcha" in title.lower() or "robot" in title.lower() or title.lower() == "amazon.in" or title.lower() == "amazon.com":
                     print("❌ Fallback requests scraper blocked by CAPTCHA.")
@@ -258,16 +310,12 @@ class AmazonScraper:
                 # Price fallback
                 price_elem = soup.find(class_="a-price-whole") or soup.find(class_="a-offscreen")
                 result["price"] = price_elem.get_text().strip() if price_elem else ""
-                print(f"Fallback Product Price: {result['price']}")
                 
                 # Main Image
-                img_elem = soup.find(id="landingImage")
                 img_url = None
+                img_elem = soup.find(id="landingImage")
                 if img_elem:
-                    if img_elem.has_attr("data-old-hires"):
-                        img_url = img_elem["data-old-hires"]
-                    elif img_elem.has_attr("src"):
-                        img_url = img_elem["src"]
+                    img_url = img_elem.get("data-old-hires") or img_elem.get("src")
                         
                 if img_url:
                     img_data = requests.get(img_url, headers=headers, timeout=15).content
@@ -276,18 +324,11 @@ class AmazonScraper:
                         f.write(img_data)
                     result["image_path"] = image_path
                     result["screenshot_path"] = image_path
-                    print("Fallback download successful!")
-                
-                # Bullet points
-                bullets = soup.find(id="feature-bullets")
-                if bullets:
-                    items = bullets.find_all("li")
-                    details = [item.get_text().strip() for item in items if item.get_text().strip()]
-                    result["details"] = "\n".join(details)
+                    print("Fallback direct download successful!")
             else:
                 print(f"Fallback requests returned status code: {res.status_code}")
         except Exception as ex:
-            print(f"Fallback scraping error: {ex}")
+            print(f"Fallback direct scraping error: {ex}")
 
 if __name__ == "__main__":
     # Test script run
