@@ -108,63 +108,58 @@ def find_trending_products(tag, num_links=5):
     location_code = "110001" if domain == "amazon.in" else "10001"
     print(f"Using marketplace domain: {domain} with delivery code: {location_code}")
     
-    # 1. Try Gemini with Google Search Grounding first (Highly reliable on cloud, bypasses CAPTCHA)
-    print("Attempting to find trending products using Gemini with Google Search Grounding...")
-    config = load_config()
-    gemini_key = os.environ.get("GEMINI_API_KEY") or config.get("gemini_api_key", "")
-    
-    if gemini_key and not gemini_key.startswith("YOUR_"):
-        try:
-            from google import genai
-            from google.genai import types
+    # 1. Try DuckDuckGo HTML Search Scraper (100% Free, CAPTCHA-Proof on Cloud, No Credits Required)
+    print("Attempting to find trending products using DuckDuckGo HTML Search Scraper...")
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        
+        query = f"site:{domain}/dp/ OR site:{domain}/gp/product/ {keyword}"
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+        
+        print(f"Searching DuckDuckGo: {url}")
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
             
-            client = genai.Client(api_key=gemini_key)
-            prompt = f"""
-            Find {num_links + 5} real, active product URLs for trending women's fashion items (related to '{keyword}') on Amazon {domain} (www.{domain}).
-            Format the output as a valid JSON list of objects, where each object has "title" and "url".
-            Return ONLY the raw JSON list, no markdown code block or extra explanation text.
-            """
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                )
-            )
-            
-            # Clean and parse the response text to find the JSON array
-            text_response = response.text.strip()
-            if "```json" in text_response:
-                text_response = text_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in text_response:
-                text_response = text_response.split("```")[1].split("```")[0].strip()
+            links_found = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                # Parse DuckDuckGo redirects
+                if "uddg=" in href:
+                    parsed_href = urllib.parse.urlparse(href)
+                    queries = urllib.parse.parse_qs(parsed_href.query)
+                    actual_url = queries.get("uddg", [None])[0]
+                    if actual_url:
+                        href = actual_url
                 
-            try:
-                products = json.loads(text_response)
-                if isinstance(products, list):
-                    count = 0
-                    for p in products:
-                        if count >= num_links:
-                            break
-                        url_val = p.get("url", "")
-                        asin = extract_asin(url_val)
-                        if asin and asin not in already_processed:
-                            # Construct correct affiliate link
-                            aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
-                            new_affiliate_links.append(aff_url)
-                            already_processed.add(asin)
-                            print(f"Found new fashion item via Gemini Grounding: {asin} -> {aff_url}")
-                            count += 1
-                            
-                    if new_affiliate_links:
-                        print(f"Successfully retrieved {len(new_affiliate_links)} products using Gemini Grounding.")
-                        return new_affiliate_links
-            except Exception as parse_err:
-                print(f"Failed to parse Gemini response as JSON: {parse_err}")
-                print(f"Raw response: {text_response}")
-        except Exception as api_err:
-            print(f"Gemini Search Grounding method failed: {api_err}")
+                if domain in href and ("/dp/" in href or "/gp/product/" in href):
+                    links_found.append(href)
+            
+            count = 0
+            for url_val in set(links_found):
+                if count >= num_links:
+                    break
+                asin = extract_asin(url_val)
+                if asin and asin not in already_processed:
+                    aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
+                    new_affiliate_links.append(aff_url)
+                    already_processed.add(asin)
+                    print(f"Found new fashion item via DuckDuckGo: {asin} -> {aff_url}")
+                    count += 1
+            
+            if new_affiliate_links:
+                print(f"Successfully retrieved {len(new_affiliate_links)} products using DuckDuckGo HTML Search.")
+                return new_affiliate_links
+        else:
+            print(f"DuckDuckGo returned status code {response.status_code}")
+    except Exception as ddg_err:
+        print(f"DuckDuckGo Search method failed: {ddg_err}")
             
     # 2. Fallback to Playwright browser scraper if Gemini Grounding failed
     print("Falling back to Playwright browser scraper...")
