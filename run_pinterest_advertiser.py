@@ -192,33 +192,17 @@ def get_or_create_board(client, board_name):
         
     return None
 
-def main(url_arg=None):
-    print("==================================================")
-    print(f"   STARTING PINTEREST DAILY AFFILIATE GENERATOR   ")
-    print(f"   Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("==================================================")
-    
-    is_manual = False
-    if url_arg:
-        url = url_arg
-        remaining_queue = []
-        is_manual = True
-        print(f"Manual override URL provided: {url}")
-    else:
-        # 1. Fetch next URL from queue
-        url, remaining_queue = get_next_link()
-        if not url:
-            print("Queue is empty. No links to process in amazon_links.txt.")
-            sys.exit(0)
-        print(f"Processing URL from queue: {url}")
-    
+def process_single_url(url, remaining_queue=None, is_manual=False):
+    """Processes a single Amazon product URL: scrapes it, generates the poster, and posts to Pinterest."""
     try:
         # 2. Scrape Amazon product details & image
         scraper = AmazonScraper()
         scraped_info = scraper.scrape_product(url)
         
         if not scraped_info["image_path"]:
-            raise ValueError("Failed to retrieve product image/screenshot. Skipping.")
+            print(f"⚠️ Failed to retrieve product image/screenshot for {url}.")
+            log_to_history(url, "FAILED - No Image", scraped_info.get("title", "Unknown Product"))
+            return False
             
         # 3. Generate copywriting and poster
         generator = PosterGenerator()
@@ -235,7 +219,6 @@ def main(url_arg=None):
         pinterest = PinterestClient()
         
         # Determine board ID
-        # Priority: 1. Board ID in config, 2. Resolve/create board name from Gemini
         board_id = pinterest.board_id
         if not board_id:
             suggested_board = ad_copy.get("board_name", "Fashion Essentials")
@@ -243,7 +226,9 @@ def main(url_arg=None):
             board_id = get_or_create_board(pinterest, suggested_board)
             
         if not board_id:
-            raise ValueError("No Pinterest Board ID could be resolved or created.")
+            print("❌ No Pinterest Board ID could be resolved or created.")
+            log_to_history(url, "FAILED - No Board ID", scraped_info["title"])
+            return False
             
         # 6. Publish Pin
         pin_title = ad_copy.get("pin_title", scraped_info["title"])
@@ -255,7 +240,6 @@ def main(url_arg=None):
         import urllib.parse as urlparse
         from urllib.parse import urlencode, parse_qsl, urlunparse
         try:
-            # Resolve absolute url if it's a short link to ensure tag is appended correctly
             target_url = scraped_info.get("url") or url
             url_parts = list(urlparse.urlparse(target_url))
             query = dict(parse_qsl(url_parts[4]))
@@ -270,7 +254,7 @@ def main(url_arg=None):
         pin_data = pinterest.create_pin(
             title=pin_title,
             description=pin_desc,
-            link=affiliate_url, # Affiliate link goes here!
+            link=affiliate_url,
             image_url=public_image_url,
             board_id=board_id
         )
@@ -278,7 +262,7 @@ def main(url_arg=None):
         pin_url = f"https://www.pinterest.com/pin/{pin_data.get('id')}/"
         
         # 7. Update queue and log history
-        if not is_manual:
+        if not is_manual and remaining_queue is not None:
             update_queue(remaining_queue)
         log_to_history(url, pin_url, scraped_info["title"])
         
@@ -296,12 +280,47 @@ def main(url_arg=None):
         print(f"Processed: {scraped_info['title']}")
         print(f"Pin URL: {pin_url}")
         print("==================================================")
+        return True
         
     except Exception as e:
-        error_msg = f"❌ <b>Pinterest Daily Generator Failed!</b>\n\n<b>URL:</b> {url}\n<b>Error:</b> {str(e)}"
-        print(f"\n❌ ERROR RUNNING GENERATOR: {e}")
-        send_telegram_notification(error_msg)
-        sys.exit(1)
+        print(f"❌ Error processing URL {url}: {e}")
+        prod_title = scraped_info.get("title", "Unknown Product") if 'scraped_info' in locals() else "Unknown Product"
+        log_to_history(url, f"FAILED - {str(e)[:50]}", prod_title)
+        return False
+
+def main(url_arg=None):
+    print("==================================================")
+    print(f"   STARTING PINTEREST DAILY AFFILIATE GENERATOR   ")
+    print(f"   Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("==================================================")
+    
+    if url_arg:
+        print(f"Manual override URL provided: {url_arg}")
+        success = process_single_url(url_arg, is_manual=True)
+        if not success:
+            sys.exit(1)
+    else:
+        # Loop through queue until we successfully post a pin
+        processed_any = False
+        while True:
+            url, remaining_queue = get_next_link()
+            if not url:
+                print("Queue is empty. No links to process in amazon_links.txt.")
+                break
+                
+            print(f"Processing URL from queue: {url}")
+            success = process_single_url(url, remaining_queue, is_manual=False)
+            if success:
+                processed_any = True
+                break
+            else:
+                print(f"⚠️ Failed to process URL {url}. Removing from queue and trying next link...")
+                update_queue(remaining_queue)
+                time.sleep(2)
+                
+        if not processed_any:
+            print("No pins were successfully created in this run (either queue was empty or all items failed).")
+            sys.exit(0)
 
 if __name__ == "__main__":
     # Command line argument parser for developer diagnostics
