@@ -288,7 +288,7 @@ def process_single_url(url, remaining_queue=None, is_manual=False):
         log_to_history(url, f"FAILED - {str(e)[:50]}", prod_title)
         return False
 
-def main(url_arg=None):
+def main(url_arg=None, count=1):
     print("==================================================")
     print(f"   STARTING PINTEREST DAILY AFFILIATE GENERATOR   ")
     print(f"   Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -300,26 +300,29 @@ def main(url_arg=None):
         if not success:
             sys.exit(1)
     else:
-        # Loop through queue until we successfully post a pin
-        processed_any = False
-        while True:
+        # Loop through queue until we successfully post `count` pins
+        processed_count = 0
+        while processed_count < count:
             url, remaining_queue = get_next_link()
             if not url:
-                print("Queue is empty. No links to process in amazon_links.txt.")
+                print("Queue is empty. No more links to process in amazon_links.txt.")
                 break
                 
             print(f"Processing URL from queue: {url}")
             success = process_single_url(url, remaining_queue, is_manual=False)
             if success:
-                processed_any = True
-                break
+                processed_count += 1
+                print(f"Successfully posted {processed_count}/{count} pins.")
+                if processed_count < count:
+                    print("Waiting 10 seconds before processing the next pin to respect Pinterest API pacing...")
+                    time.sleep(10)
             else:
                 print(f"⚠️ Failed to process URL {url}. Removing from queue and trying next link...")
                 update_queue(remaining_queue)
                 time.sleep(2)
                 
-        if not processed_any:
-            print("No pins were successfully created in this run (either queue was empty or all items failed).")
+        if processed_count == 0:
+            print("No pins were successfully created in this run.")
             sys.exit(0)
 
 if __name__ == "__main__":
@@ -329,6 +332,7 @@ if __name__ == "__main__":
     parser.add_argument("--url", type=str, help="Manually run a single Amazon URL override")
     parser.add_argument("--test-scrape", type=str, help="Test scraping an Amazon URL and download image")
     parser.add_argument("--test-poster", type=str, help="Test generating ad copy and layout from local image")
+    parser.add_argument("--count", type=int, default=1, help="Number of successful pins to generate in this run")
     
     args = parser.parse_args()
     
@@ -345,4 +349,4 @@ if __name__ == "__main__":
         sys.exit(0)
         
     # Standard run
-    main(args.url)
+    main(args.url, args.count)

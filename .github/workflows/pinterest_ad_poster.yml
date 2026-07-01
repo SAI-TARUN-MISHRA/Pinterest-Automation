@@ -2,13 +2,11 @@ name: Pinterest Fashion Affiliate Poster
 
 on:
   schedule:
-    # Morning: 8:00 AM IST (2:30 AM UTC) & 9:30 AM IST (4:00 AM UTC)
-    # Evening: 7:00 PM IST (1:30 PM UTC) & 8:30 PM IST (3:00 PM UTC)
-    - cron: '30 2 * * *'
-    - cron: '0 4 * * *'
+    # Morning: 9:00 AM IST (3:30 AM UTC)
+    - cron: '30 3 * * *'
+    # Evening: 7:00 PM IST (1:30 PM UTC)
     - cron: '30 13 * * *'
-    - cron: '0 15 * * *'
-    # Daily Trend Finder at 00:00 UTC (5:30 AM IST) to add 5 new links daily
+    # Daily Trend Finder at 00:00 UTC (5:30 AM IST) to add 15 new links daily
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
@@ -62,7 +60,7 @@ jobs:
         run: |
           # Write secrets variables temporary to config.json
           echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"amazon_associates_tag\":\"designforyo0e-21\",\"niche\":\"fashion\"}" > config.json
-          python amazon_trend_finder.py
+          python amazon_trend_finder.py --count 15
 
       - name: Run Ad Poster
         # Run if posting cron, or manually triggered (and not run_trend_finder)
@@ -86,6 +84,8 @@ jobs:
           # Check if URL override is provided
           if [ -n "${{ github.event.inputs.amazon_url }}" ]; then
             python run_pinterest_advertiser.py --url "${{ github.event.inputs.amazon_url }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            python run_pinterest_advertiser.py --count 6
           else
             python run_pinterest_advertiser.py
           fi

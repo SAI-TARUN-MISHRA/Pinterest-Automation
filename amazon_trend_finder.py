@@ -245,6 +245,11 @@ def find_trending_products(tag, num_links=5):
     return new_affiliate_links
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Amazon Automated Fashion Trend Finder")
+    parser.add_argument("--count", type=int, default=15, help="Number of trending products to find")
+    args = parser.parse_args()
+
     config = load_config()
     tag = config.get("amazon_associates_tag")
     
@@ -254,7 +259,7 @@ def main():
         sys.exit(1)
         
     try:
-        new_links = find_trending_products(tag, num_links=5)
+        new_links = find_trending_products(tag, num_links=args.count)
         
         if not new_links:
             print("\n⚠️ No new unique fashion items found in this run.")
