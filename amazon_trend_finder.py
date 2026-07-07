@@ -108,7 +108,70 @@ def find_trending_products(tag, num_links=5):
     location_code = "110001" if domain == "amazon.in" else "10001"
     print(f"Using marketplace domain: {domain} with delivery code: {location_code}")
     
-    # 1. Try DuckDuckGo HTML Search Scraper (100% Free, CAPTCHA-Proof on Cloud, No Credits Required)
+    # 1. Try Google Translate proxy search (100% Free, CAPTCHA-proof on Cloud, Extremely reliable)
+    print("Attempting to find trending products using Google Translate proxy search...")
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        import re
+        
+        # Use '+' for spaces in search query to avoid double-encoding issues with Google Translate nested proxy
+        search_query = keyword.replace(' ', '+')
+        target_url = f"https://www.{domain}/s?k={search_query}"
+        encoded_url = urllib.parse.quote(target_url)
+        proxy_url = f"https://translate.google.com/translate?sl=auto&tl=en&u={encoded_url}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+        
+        print(f"Loading search page via proxy: {proxy_url}")
+        response = requests.get(proxy_url, headers=headers, timeout=20)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            # Extract links and look for content-frame iframe
+            iframe = soup.find("iframe", id="content-frame") or soup.find("iframe", class_="content-frame")
+            if iframe and iframe.get("src"):
+                print("Fetching iframe search results from proxy...")
+                iframe_res = requests.get(iframe.get("src"), headers=headers, timeout=20)
+                if iframe_res.status_code == 200:
+                    soup = BeautifulSoup(iframe_res.text, "html.parser")
+            
+            links_found = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                # Parse Google Translate redirects if present
+                if "uddg=" in href:
+                    queries = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                    actual_url = queries.get("uddg", [None])[0]
+                    if actual_url:
+                        href = actual_url
+                links_found.append(href)
+                
+            count = 0
+            for url_val in set(links_found):
+                if count >= num_links:
+                    break
+                asin = extract_asin(url_val)
+                if asin and asin not in already_processed:
+                    aff_url = f"https://www.{domain}/dp/{asin}/?tag={tag}"
+                    new_affiliate_links.append(aff_url)
+                    already_processed.add(asin)
+                    print(f"Found new fashion item via Proxy Search: {asin} -> {aff_url}")
+                    count += 1
+            
+            if new_affiliate_links:
+                print(f"Successfully retrieved {len(new_affiliate_links)} products using Google Translate Proxy Search.")
+                return new_affiliate_links
+            else:
+                print("No unique ASINs extracted from proxy search page.")
+        else:
+            print(f"Google Translate proxy search returned status code {response.status_code}")
+    except Exception as proxy_err:
+        print(f"Google Translate proxy search method failed: {proxy_err}")
+
+    # 2. Try DuckDuckGo HTML Search Scraper (Fallback)
     print("Attempting to find trending products using DuckDuckGo HTML Search Scraper...")
     try:
         import requests
