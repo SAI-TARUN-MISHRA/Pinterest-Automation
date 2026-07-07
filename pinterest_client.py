@@ -148,7 +148,63 @@ class PinterestClient:
         if response.status_code == 201:
             pin_data = response.json()
             pin_url = f"https://www.pinterest.com/pin/{pin_data.get('id')}/"
-            print(f"🎉 Successfully created Pin: {pin_url}")
+            print(f"Successfully created Pin: {pin_url}")
             return pin_data
         else:
             raise Exception(f"Failed to create Pin: Status {response.status_code} - {response.text}")
+
+    def create_pin_from_file(self, title, description, link, image_path, board_id=None):
+        """
+        Creates a Pin by sending the image as base64 directly to Pinterest.
+        This bypasses all CDN hosting — no external URL required.
+        Uses source_type 'image_base64' which Pinterest always accepts.
+        """
+        b_id = board_id or self.board_id
+        if not b_id:
+            raise ValueError("No Pinterest Board ID set.")
+
+        # Read and base64-encode the image
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        b64_data = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Determine content type from file extension
+        ext = os.path.splitext(image_path)[1].lower()
+        content_type_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }
+        content_type = content_type_map.get(ext, "image/jpeg")
+
+        url = f"{self.base_url}/v5/pins"
+        payload = {
+            "board_id": b_id,
+            "title": title[:100],
+            "description": description[:500],
+            "link": link,
+            "media_source": {
+                "source_type": "image_base64",
+                "content_type": content_type,
+                "data": b64_data,
+            },
+        }
+
+        headers = self.get_headers()
+        print(f"Creating Pin (base64 upload) '{title[:60]}...' on Board {b_id}...")
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+
+        if response.status_code == 401:
+            print("Token expired, refreshing and retrying...")
+            headers = self.get_headers(refresh=True)
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+
+        if response.status_code == 201:
+            pin_data = response.json()
+            pin_url = f"https://www.pinterest.com/pin/{pin_data.get('id')}/"
+            print(f"Successfully created Pin (base64): {pin_url}")
+            return pin_data
+        else:
+            raise Exception(f"Failed to create Pin (base64): Status {response.status_code} - {response.text}")
+

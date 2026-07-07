@@ -284,19 +284,11 @@ def process_single_url(url, remaining_queue=None, is_manual=False):
             retries=2, delays=(5, 15), label="Poster generation"
         )
 
-        # Step 3 — Upload to CDN (3 built-in fallbacks inside)
-        public_image_url = retry_with_backoff(
-            lambda: upload_image_to_cdn(poster_path),
-            retries=2, delays=(5, 15), label="CDN upload"
-        )
-
-        # Step 4 — Pinterest client + board resolution
+        # Step 3 — Pinterest client + board resolution
         pinterest = PinterestClient()
-        board_id = pinterest.board_id
-        if not board_id:
-            suggested_board = ad_copy.get("board_name", "Fashion Essentials")
-            print(f"Resolving board: '{suggested_board}'")
-            board_id = get_or_create_board(pinterest, suggested_board)
+        suggested_board = ad_copy.get("board_name", "Fashion Essentials")
+        print(f"Resolving board: '{suggested_board}'")
+        board_id = get_or_create_board(pinterest, suggested_board)
 
         if not board_id:
             print("❌ No Pinterest board ID could be resolved.")
@@ -319,20 +311,41 @@ def process_single_url(url, remaining_queue=None, is_manual=False):
             print(f"Warning: Could not build affiliate URL: {e}")
             affiliate_url = url
 
-        # Step 6 — Publish Pin (with retry)
+        # Step 6 — Publish Pin (with retry and base64 upload as primary, CDN as fallback)
         pin_title = ad_copy.get("pin_title", scraped_info["title"])
         pin_desc = ad_copy.get("pin_description", "Premium fashion inspiration. Shop the look now!")
 
-        pin_data = retry_with_backoff(
-            lambda: pinterest.create_pin(
-                title=pin_title,
-                description=pin_desc,
-                link=affiliate_url,
-                image_url=public_image_url,
-                board_id=board_id,
-            ),
-            retries=3, delays=(10, 30, 60), label="Pinterest pin creation"
-        )
+        pin_data = None
+        public_image_url = None
+        try:
+            print("Attempting to publish pin using base64 direct image upload...")
+            pin_data = retry_with_backoff(
+                lambda: pinterest.create_pin_from_file(
+                    title=pin_title,
+                    description=pin_desc,
+                    link=affiliate_url,
+                    image_path=poster_path,
+                    board_id=board_id,
+                ),
+                retries=2, delays=(10, 30), label="Pinterest base64 pin creation"
+            )
+        except Exception as b64_err:
+            print(f"⚠️ Direct base64 upload failed: {b64_err}. Falling back to CDN URL method...")
+            # Step 6b — Fallback to CDN upload + URL-based pin creation
+            public_image_url = retry_with_backoff(
+                lambda: upload_image_to_cdn(poster_path),
+                retries=2, delays=(5, 15), label="CDN upload fallback"
+            )
+            pin_data = retry_with_backoff(
+                lambda: pinterest.create_pin(
+                    title=pin_title,
+                    description=pin_desc,
+                    link=affiliate_url,
+                    image_url=public_image_url,
+                    board_id=board_id,
+                ),
+                retries=2, delays=(10, 30), label="Pinterest URL pin creation"
+            )
 
         pin_url = f"https://www.pinterest.com/pin/{pin_data.get('id')}/"
 
