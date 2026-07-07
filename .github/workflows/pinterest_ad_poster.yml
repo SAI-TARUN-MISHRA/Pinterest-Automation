@@ -6,16 +6,23 @@ on:
     - cron: '30 3 * * *'
     # Evening: 7:00 PM IST (1:30 PM UTC)
     - cron: '30 13 * * *'
-    # Daily Trend Finder at 00:00 UTC (5:30 AM IST) to add 15 new links daily
+    # Daily Trend Finder at 00:00 UTC (5:30 AM IST)
     - cron: '0 0 * * *'
+    # Weekly health check — Sunday 6:00 PM UTC (11:30 PM IST)
+    - cron: '0 18 * * 0'
   workflow_dispatch:
     inputs:
       amazon_url:
-        description: 'Manual Amazon Link (Overrides queue. Leave blank to run next in queue)'
+        description: 'Manual Amazon Link (leave blank to run next in queue)'
         required: false
         default: ''
       run_trend_finder:
-        description: 'Check to run Trend Finder instead of posting'
+        description: 'Run Trend Finder instead of posting'
+        type: boolean
+        required: false
+        default: false
+      run_health_check:
+        description: 'Run weekly health check manually'
         type: boolean
         required: false
         default: false
@@ -26,6 +33,7 @@ permissions:
 jobs:
   run-poster:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,35 +46,56 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install pip packages & Playwright
+      - name: Install dependencies
         run: |
           pip install requests beautifulsoup4 google-genai openai pillow playwright python-dotenv
           playwright install --with-deps chromium
 
-      - name: Create fallback empty logs/queue if missing
+      - name: Create fallback files if missing
         run: |
           touch amazon_links.txt
           touch amazon_links_history.txt
 
+      # STEP: WEEKLY HEALTH CHECK
+      - name: Weekly Health Check
+        if: |
+          (github.event_name == 'schedule' && github.event.schedule == '0 18 * * 0') ||
+          (github.event_name == 'workflow_dispatch' && inputs.run_health_check)
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PINTEREST_CLIENT_ID: ${{ secrets.PINTEREST_CLIENT_ID }}
+          PINTEREST_CLIENT_SECRET: ${{ secrets.PINTEREST_CLIENT_SECRET }}
+          PINTEREST_REFRESH_TOKEN: ${{ secrets.PINTEREST_REFRESH_TOKEN }}
+          PINTEREST_BOARD_ID: ${{ secrets.PINTEREST_BOARD_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"},\"amazon_associates_tag\":\"designforyo0e-21\"}" > config.json
+          python health_check.py
+
+      # STEP: TREND FINDER
       - name: Run Trend Finder
-        # Run if triggered by daily cron, or manually selected
         if: |
           (github.event_name == 'schedule' && github.event.schedule == '0 0 * * *') ||
           (github.event_name == 'workflow_dispatch' && inputs.run_trend_finder)
+        continue-on-error: true
+        timeout-minutes: 10
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Write secrets variables temporary to config.json
           echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"amazon_associates_tag\":\"designforyo0e-21\",\"niche\":\"fashion\"}" > config.json
           python amazon_trend_finder.py --count 15
 
+      # STEP: PIN POSTER
       - name: Run Ad Poster
-        # Run if posting cron, or manually triggered (and not run_trend_finder)
         if: |
-          (github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') ||
-          (github.event_name == 'workflow_dispatch' && !inputs.run_trend_finder)
+          (github.event_name == 'schedule' && github.event.schedule != '0 0 * * *' && github.event.schedule != '0 18 * * 0') ||
+          (github.event_name == 'workflow_dispatch' && !inputs.run_trend_finder && !inputs.run_health_check)
+        timeout-minutes: 20
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -78,10 +107,17 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Construct temporary config.json with env secrets
-          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"}}" > config.json
-          
-          # Check if URL override is provided
+          echo "{\"gemini_api_key\":\"$GEMINI_API_KEY\",\"openai_api_key\":\"$OPENAI_API_KEY\",\"hf_token\":\"$HF_TOKEN\",\"use_ai_centerpiece\":false,\"amazon_associates_tag\":\"designforyo0e-21\",\"pinterest\":{\"client_id\":\"$PINTEREST_CLIENT_ID\",\"client_secret\":\"$PINTEREST_CLIENT_SECRET\",\"refresh_token\":\"$PINTEREST_REFRESH_TOKEN\",\"board_id\":\"$PINTEREST_BOARD_ID\"},\"telegram\":{\"bot_token\":\"$TELEGRAM_BOT_TOKEN\",\"chat_id\":\"$TELEGRAM_CHAT_ID\"}}" > config.json
+
+          # Queue health gate: auto-refill if below 10 items
+          QUEUE_SIZE=$(grep -c "^https" amazon_links.txt 2>/dev/null || echo "0")
+          echo "Queue size: $QUEUE_SIZE"
+          if [ "$QUEUE_SIZE" -lt 10 ]; then
+            echo "Queue low. Running Trend Finder first..."
+            python amazon_trend_finder.py --count 15 || echo "Trend finder failed, continuing with existing queue"
+          fi
+
+          # Run the poster
           if [ -n "${{ github.event.inputs.amazon_url }}" ]; then
             python run_pinterest_advertiser.py --url "${{ github.event.inputs.amazon_url }}"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
@@ -91,10 +127,10 @@ jobs:
           fi
 
       - name: Commit and Push changes
+        if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f amazon_links.txt amazon_links_history.txt
-          # Commit only if files have changed to avoid action errors
-          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update Amazon links queue and history [skip ci]"
-          git push
+          git add -f amazon_links.txt amazon_links_history.txt last_keyword_index.txt 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update queue and history [skip ci]"
+          git push || echo "Push failed — no changes to commit"

@@ -4,6 +4,7 @@ import json
 import time
 import requests
 import datetime
+import subprocess
 from amazon_scraper import AmazonScraper
 from poster_generator import PosterGenerator
 from pinterest_client import PinterestClient
@@ -19,6 +20,10 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 QUEUE_PATH = os.path.join(BASE_DIR, "amazon_links.txt")
 HISTORY_PATH = os.path.join(BASE_DIR, "amazon_links_history.txt")
 
+# Minimum queue size before auto-refill is triggered
+MIN_QUEUE_SIZE = 10
+AUTO_REFILL_COUNT = 15
+
 def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -28,33 +33,24 @@ def load_config():
                 return {}
     return {}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram notifications
+# ─────────────────────────────────────────────────────────────────────────────
 def send_telegram_notification(message, image_url=None):
     config = load_config()
     tele_config = config.get("telegram", {})
     bot_token = tele_config.get("bot_token")
     chat_id = tele_config.get("chat_id")
-    
     if not bot_token or not chat_id or "YOUR_TELEGRAM" in bot_token or "YOUR_TELEGRAM" in chat_id:
         return
-        
     print("Sending Telegram notification...")
     try:
         if image_url:
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            payload = {
-                "chat_id": chat_id,
-                "photo": image_url,
-                "caption": message,
-                "parse_mode": "HTML"
-            }
+            payload = {"chat_id": chat_id, "photo": image_url, "caption": message, "parse_mode": "HTML"}
         else:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-        
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         res = requests.post(url, json=payload, timeout=15)
         if res.status_code == 200:
             print("Telegram notification sent successfully.")
@@ -63,38 +59,42 @@ def send_telegram_notification(message, image_url=None):
     except Exception as e:
         print(f"Error sending Telegram notification: {e}")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue management
+# ─────────────────────────────────────────────────────────────────────────────
+def count_queue_items():
+    """Returns the number of valid (non-comment, non-empty) URLs in the queue."""
+    if not os.path.exists(QUEUE_PATH):
+        return 0
+    count = 0
+    with open(QUEUE_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                count += 1
+    return count
+
 def get_next_link():
     if not os.path.exists(QUEUE_PATH):
         return None, []
-        
     with open(QUEUE_PATH, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        
-    clean_lines = []
     next_link = None
-    
     for line in lines:
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if next_link is None:
+        if stripped and not stripped.startswith("#"):
             next_link = stripped
-        else:
-            clean_lines.append(line) # Keep in queue
-            
-    # Also preserve comment lines and empty lines for context
+            break
+    if not next_link:
+        return None, lines
     remaining_lines = []
     found_next = False
     for line in lines:
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            remaining_lines.append(line)
-        elif not found_next and stripped == next_link:
+        if not found_next and stripped == next_link:
             found_next = True
-            # Skip this line as it is being processed
-        else:
-            remaining_lines.append(line)
-            
+            continue
+        remaining_lines.append(line)
     return next_link, remaining_lines
 
 def update_queue(remaining_lines):
@@ -106,135 +106,204 @@ def log_to_history(url, pin_url, title):
     with open(HISTORY_PATH, "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] URL: {url} | Pin: {pin_url} | Title: {title}\n")
 
-def upload_image_to_tmpfiles(image_path):
-    """Uploads a local image to tmpfiles.org and returns the direct download URL."""
-    print(f"Uploading local poster {image_path} to tmpfiles.org CDN...")
-    url = "https://tmpfiles.org/api/v1/upload"
-    
+def auto_refill_queue():
+    """Run the Trend Finder inline to top up the queue."""
+    print(f"⚠️  Queue has fewer than {MIN_QUEUE_SIZE} items. Auto-refilling...")
+    try:
+        result = subprocess.run(
+            [sys.executable, os.path.join(BASE_DIR, "amazon_trend_finder.py"), "--count", str(AUTO_REFILL_COUNT)],
+            timeout=120,
+        )
+        if result.returncode == 0:
+            print(f"✅ Auto-refill done. Queue now has {count_queue_items()} items.")
+        else:
+            print("⚠️  Auto-refill finished with non-zero exit. Continuing anyway.")
+    except subprocess.TimeoutExpired:
+        print("⚠️  Auto-refill timed out after 120s. Continuing with available items.")
+    except Exception as e:
+        print(f"⚠️  Auto-refill failed: {e}. Continuing with available items.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-CDN image upload with 3 fallbacks
+# ─────────────────────────────────────────────────────────────────────────────
+def upload_image_to_cdn(image_path):
+    """
+    Uploads a local image to a public CDN. Tries 3 CDNs in order:
+      1. 0x0.st       — primary, permanent URLs
+      2. tmpfiles.org  — secondary, 24h CDN
+      3. catbox.moe    — tertiary, permanent free hosting
+    """
+    print(f"Uploading poster to CDN: {image_path}")
+
+    # CDN 1: 0x0.st (permanent, no account needed)
     try:
         with open(image_path, "rb") as f:
-            files = {"file": f}
-            response = requests.post(url, files=files, timeout=30)
-            
-        if response.status_code == 200:
-            res_data = response.json()
-            # Example response: {"status": "success", "data": {"url": "https://tmpfiles.org/12345/image.png"}}
-            tmp_url = res_data.get("data", {}).get("url")
-            if tmp_url:
-                # Convert view URL to direct download URL
-                direct_url = tmp_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                print(f"CDN Direct URL: {direct_url}")
-                return direct_url
-            else:
-                raise ValueError(f"Unexpected API response layout: {response.text}")
-        else:
-            raise Exception(f"CDN Upload failed with status {response.status_code}: {response.text}")
+            res = requests.post("https://0x0.st", files={"file": f}, timeout=30)
+        if res.status_code == 200 and res.text.strip().startswith("https://"):
+            url = res.text.strip()
+            print(f"✅ CDN 1 (0x0.st): {url}")
+            return url
+        print(f"CDN 1 (0x0.st) failed: {res.status_code}")
     except Exception as e:
-        raise Exception(f"Error uploading image to CDN: {e}")
+        print(f"CDN 1 (0x0.st) error: {e}")
 
+    # CDN 2: tmpfiles.org
+    try:
+        with open(image_path, "rb") as f:
+            res = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f}, timeout=30)
+        if res.status_code == 200:
+            tmp_url = res.json().get("data", {}).get("url", "")
+            if tmp_url:
+                direct_url = tmp_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"✅ CDN 2 (tmpfiles.org): {direct_url}")
+                return direct_url
+        print(f"CDN 2 (tmpfiles.org) failed: {res.status_code}")
+    except Exception as e:
+        print(f"CDN 2 (tmpfiles.org) error: {e}")
+
+    # CDN 3: catbox.moe (permanent free hosting)
+    try:
+        with open(image_path, "rb") as f:
+            res = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": f},
+                timeout=30,
+            )
+        if res.status_code == 200 and res.text.strip().startswith("https://"):
+            url = res.text.strip()
+            print(f"✅ CDN 3 (catbox.moe): {url}")
+            return url
+        print(f"CDN 3 (catbox.moe) failed: {res.status_code}")
+    except Exception as e:
+        print(f"CDN 3 (catbox.moe) error: {e}")
+
+    raise RuntimeError("All 3 CDN upload attempts failed. Cannot publish pin without a public image URL.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retry helper with exponential backoff
+# ─────────────────────────────────────────────────────────────────────────────
+def retry_with_backoff(fn, retries=3, delays=(5, 15, 45), label="operation"):
+    """Calls fn(); retries on exception with exponential backoff delays."""
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                wait = delays[min(attempt - 1, len(delays) - 1)]
+                print(f"⚠️  {label} failed (attempt {attempt}/{retries}): {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"❌ {label} failed after {retries} attempts: {e}")
+    raise last_exc
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Board resolution helper
+# ─────────────────────────────────────────────────────────────────────────────
 def get_or_create_board(client, board_name):
-    """Checks if a board with the suggested name exists, or creates it."""
     url = f"{client.base_url}/v5/boards"
     headers = client.get_headers()
-    
-    # 1. Fetch current boards
     boards = []
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=15)
         if res.status_code == 200:
             boards = res.json().get("items", [])
-            # Try exact match
             for board in boards:
-                if board.get("name").lower() == board_name.lower():
-                    print(f"Found existing board matching name: '{board.get('name')}' (ID: {board.get('id')})")
+                if board.get("name", "").lower() == board_name.lower():
+                    print(f"Found exact board: '{board.get('name')}' (ID: {board.get('id')})")
                     return board.get("id")
-            # Try partial/substring match
             for board in boards:
-                b_name_lower = board.get("name").lower()
-                suggested_lower = board_name.lower()
-                if b_name_lower in suggested_lower or suggested_lower in b_name_lower:
-                    print(f"Found partially matching board: '{board.get('name')}' (ID: {board.get('id')})")
+                b_name = board.get("name", "").lower()
+                if b_name in board_name.lower() or board_name.lower() in b_name:
+                    print(f"Found partial board: '{board.get('name')}' (ID: {board.get('id')})")
                     return board.get("id")
         else:
             print(f"Failed to fetch boards: {res.text}")
     except Exception as e:
         print(f"Error fetching boards: {e}")
-        
-    # 2. If boards exist, fall back to the first available board instead of failing with write permission
+
     if boards:
-        # Prefer a board that is likely to be about fashion/style
         for board in boards:
-            b_name = board.get("name").lower()
-            if "outfit" in b_name or "fashion" in b_name or "style" in b_name or "wardrobe" in b_name:
-                print(f"Board '{board_name}' not found. Falling back to fashion board: '{board.get('name')}' (ID: {board.get('id')})")
+            b_name = board.get("name", "").lower()
+            if any(kw in b_name for kw in ("outfit", "fashion", "style", "wardrobe", "dress")):
+                print(f"Falling back to fashion board: '{board.get('name')}' (ID: {board.get('id')})")
                 return board.get("id")
-        
-        fallback_board = boards[0]
-        print(f"Board '{board_name}' not found. Falling back to existing board: '{fallback_board.get('name')}' (ID: {fallback_board.get('id')})")
-        return fallback_board.get("id")
-        
-    # 3. If no boards exist at all, try to create it
-    print(f"No boards found. Creating a new public board '{board_name}'...")
+        fallback = boards[0]
+        print(f"Falling back to first board: '{fallback.get('name')}' (ID: {fallback.get('id')})")
+        return fallback.get("id")
+
+    print(f"Creating board '{board_name}'...")
     try:
-        payload = {
-            "name": board_name[:50], # Max 50 chars
-            "privacy": "PUBLIC"
-        }
-        res = requests.post(url, headers=headers, json=payload)
+        res = requests.post(url, headers=headers, json={"name": board_name[:50], "privacy": "PUBLIC"}, timeout=15)
         if res.status_code == 201:
             new_board = res.json()
-            print(f"Successfully created board '{new_board.get('name')}' (ID: {new_board.get('id')})")
+            print(f"Created board: '{new_board.get('name')}' (ID: {new_board.get('id')})")
             return new_board.get("id")
-        else:
-            print(f"Failed to create board: {res.text}")
+        print(f"Board creation failed: {res.text}")
     except Exception as e:
         print(f"Error creating board: {e}")
-        
     return None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Core processing — one URL
+# ─────────────────────────────────────────────────────────────────────────────
 def process_single_url(url, remaining_queue=None, is_manual=False):
-    """Processes a single Amazon product URL: scrapes it, generates the poster, and posts to Pinterest."""
+    """
+    Scrapes a product, generates a poster, uploads to CDN, posts to Pinterest.
+    Returns True on success, False on any unrecoverable failure.
+    All network calls use retry_with_backoff for resilience.
+    """
+    scraped_info = None
     try:
-        # 2. Scrape Amazon product details & image
+        print(f"\n{'─'*52}")
+        print(f"  Processing: {url}")
+        print(f"{'─'*52}")
+
+        # Step 1 — Scrape product (with retry)
         scraper = AmazonScraper()
-        scraped_info = scraper.scrape_product(url)
-        
-        if not scraped_info["image_path"]:
-            print(f"⚠️ Failed to retrieve product image/screenshot for {url}.")
-            log_to_history(url, "FAILED - No Image", scraped_info.get("title", "Unknown Product"))
-            return False
-            
-        # 3. Generate copywriting and poster
-        generator = PosterGenerator()
-        ad_copy, poster_path = generator.process_url(
-            scraped_info["image_path"],
-            scraped_info["title"],
-            scraped_info["details"]
+        scraped_info = retry_with_backoff(
+            lambda: scraper.scrape_product(url),
+            retries=2, delays=(5, 20), label="Amazon scrape"
         )
-        
-        # 4. Upload poster image to temporary CDN
-        public_image_url = upload_image_to_tmpfiles(poster_path)
-        
-        # 5. Connect to Pinterest Client
+
+        if not scraped_info.get("image_path"):
+            print(f"⚠️  No product image found. Skipping.")
+            log_to_history(url, "FAILED - No Image", scraped_info.get("title", "Unknown"))
+            return False
+
+        # Step 2 — Generate poster (with retry)
+        generator = PosterGenerator()
+        ad_copy, poster_path = retry_with_backoff(
+            lambda: generator.process_url(
+                scraped_info["image_path"],
+                scraped_info["title"],
+                scraped_info["details"]
+            ),
+            retries=2, delays=(5, 15), label="Poster generation"
+        )
+
+        # Step 3 — Upload to CDN (3 built-in fallbacks inside)
+        public_image_url = retry_with_backoff(
+            lambda: upload_image_to_cdn(poster_path),
+            retries=2, delays=(5, 15), label="CDN upload"
+        )
+
+        # Step 4 — Pinterest client + board resolution
         pinterest = PinterestClient()
-        
-        # Determine board ID
         board_id = pinterest.board_id
         if not board_id:
             suggested_board = ad_copy.get("board_name", "Fashion Essentials")
-            print(f"No board_id configured. Resolving suggested board name: '{suggested_board}'")
+            print(f"Resolving board: '{suggested_board}'")
             board_id = get_or_create_board(pinterest, suggested_board)
-            
+
         if not board_id:
-            print("❌ No Pinterest Board ID could be resolved or created.")
+            print("❌ No Pinterest board ID could be resolved.")
             log_to_history(url, "FAILED - No Board ID", scraped_info["title"])
             return False
-            
-        # 6. Publish Pin
-        pin_title = ad_copy.get("pin_title", scraped_info["title"])
-        pin_desc = ad_copy.get("pin_description", "Premium fashion inspiration. Shop the look now!")
-        
-        # Ensure affiliate tag is appended/updated in the URL
+
+        # Step 5 — Build affiliate URL with tag
         config = load_config()
         tag = config.get("amazon_associates_tag", "designforyo0e-21")
         import urllib.parse as urlparse
@@ -243,110 +312,134 @@ def process_single_url(url, remaining_queue=None, is_manual=False):
             target_url = scraped_info.get("url") or url
             url_parts = list(urlparse.urlparse(target_url))
             query = dict(parse_qsl(url_parts[4]))
-            query['tag'] = tag
+            query["tag"] = tag
             url_parts[4] = urlencode(query)
             affiliate_url = urlunparse(url_parts)
-            print(f"Ensuring link is configured with tag '{tag}': {affiliate_url}")
         except Exception as e:
-            print(f"Warning: Failed to format affiliate URL tag: {e}")
+            print(f"Warning: Could not build affiliate URL: {e}")
             affiliate_url = url
 
-        pin_data = pinterest.create_pin(
-            title=pin_title,
-            description=pin_desc,
-            link=affiliate_url,
-            image_url=public_image_url,
-            board_id=board_id
+        # Step 6 — Publish Pin (with retry)
+        pin_title = ad_copy.get("pin_title", scraped_info["title"])
+        pin_desc = ad_copy.get("pin_description", "Premium fashion inspiration. Shop the look now!")
+
+        pin_data = retry_with_backoff(
+            lambda: pinterest.create_pin(
+                title=pin_title,
+                description=pin_desc,
+                link=affiliate_url,
+                image_url=public_image_url,
+                board_id=board_id,
+            ),
+            retries=3, delays=(10, 30, 60), label="Pinterest pin creation"
         )
-        
+
         pin_url = f"https://www.pinterest.com/pin/{pin_data.get('id')}/"
-        
-        # 7. Update queue and log history
+
+        # Step 7 — Update queue & history
         if not is_manual and remaining_queue is not None:
             update_queue(remaining_queue)
         log_to_history(url, pin_url, scraped_info["title"])
-        
-        # 8. Send success notification
+
+        # Step 8 — Telegram success notification
         success_msg = (
-            f"🎉 <b>Pinterest Affiliate Pin Created!</b>\n\n"
+            f"🎉 <b>Pinterest Pin Published!</b>\n\n"
             f"<b>Product:</b> {scraped_info['title']}\n"
-            f"<b>Board ID:</b> {board_id}\n"
-            f"<b>Link:</b> <a href='{pin_url}'>View Pin on Pinterest</a>"
+            f"<b>Pin:</b> <a href='{pin_url}'>View on Pinterest</a>"
         )
         send_telegram_notification(success_msg, public_image_url)
-        
-        print("\n==================================================")
-        print("🚀 RUN COMPLETED SUCCESSFULLY!")
-        print(f"Processed: {scraped_info['title']}")
-        print(f"Pin URL: {pin_url}")
-        print("==================================================")
+
+        print(f"\n✅ SUCCESS — Pin published: {pin_url}")
         return True
-        
+
     except Exception as e:
-        print(f"❌ Error processing URL {url}: {e}")
-        prod_title = scraped_info.get("title", "Unknown Product") if 'scraped_info' in locals() else "Unknown Product"
-        log_to_history(url, f"FAILED - {str(e)[:50]}", prod_title)
+        print(f"❌ process_single_url failed for {url}: {e}")
+        title = scraped_info.get("title", "Unknown") if scraped_info else "Unknown"
+        log_to_history(url, f"FAILED - {str(e)[:80]}", title)
         return False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────────
 def main(url_arg=None, count=1):
-    print("==================================================")
-    print(f"   STARTING PINTEREST DAILY AFFILIATE GENERATOR   ")
+    print("=" * 52)
+    print("   PINTEREST AFFILIATE GENERATOR — v3.0   ")
     print(f"   Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("==================================================")
-    
+    print("=" * 52)
+
     if url_arg:
-        print(f"Manual override URL provided: {url_arg}")
+        print(f"Manual override URL: {url_arg}")
         success = process_single_url(url_arg, is_manual=True)
         if not success:
             sys.exit(1)
+        return
+
+    # Auto-refill queue if running low
+    queue_size = count_queue_items()
+    print(f"Queue size: {queue_size} items")
+    if queue_size < MIN_QUEUE_SIZE:
+        auto_refill_queue()
+
+    # Process `count` pins, skipping failures without hard-exiting
+    posted = 0
+    failed_consecutive = 0
+    MAX_CONSECUTIVE_FAILURES = 10
+
+    while posted < count:
+        if failed_consecutive >= MAX_CONSECUTIVE_FAILURES:
+            msg = f"❌ <b>Generator Halted</b>\n{MAX_CONSECUTIVE_FAILURES} consecutive URL failures. Manual check needed."
+            print(msg)
+            send_telegram_notification(msg)
+            break
+
+        url, remaining_queue = get_next_link()
+        if not url:
+            print("Queue is empty. No more links to process.")
+            break
+
+        print(f"\nProcessing pin {posted + 1}/{count}...")
+        success = process_single_url(url, remaining_queue, is_manual=False)
+
+        if success:
+            posted += 1
+            failed_consecutive = 0
+            print(f"🏁 Progress: {posted}/{count} pins published.")
+            if posted < count:
+                print("Waiting 12 seconds before next pin (API pacing)...")
+                time.sleep(12)
+        else:
+            failed_consecutive += 1
+            print(f"⚠️  Removing failed URL from queue (consecutive failures: {failed_consecutive}).")
+            update_queue(remaining_queue)
+            time.sleep(3)
+
+    if posted == 0:
+        print("No pins were successfully published in this run.")
     else:
-        # Loop through queue until we successfully post `count` pins
-        processed_count = 0
-        while processed_count < count:
-            url, remaining_queue = get_next_link()
-            if not url:
-                print("Queue is empty. No more links to process in amazon_links.txt.")
-                break
-                
-            print(f"Processing URL from queue: {url}")
-            success = process_single_url(url, remaining_queue, is_manual=False)
-            if success:
-                processed_count += 1
-                print(f"Successfully posted {processed_count}/{count} pins.")
-                if processed_count < count:
-                    print("Waiting 10 seconds before processing the next pin to respect Pinterest API pacing...")
-                    time.sleep(10)
-            else:
-                print(f"⚠️ Failed to process URL {url}. Removing from queue and trying next link...")
-                update_queue(remaining_queue)
-                time.sleep(2)
-                
-        if processed_count == 0:
-            print("No pins were successfully created in this run.")
-            sys.exit(0)
+        print(f"\n{'=' * 52}")
+        print(f"   🚀 DONE — {posted}/{count} pins published!   ")
+        print(f"{'=' * 52}")
+
 
 if __name__ == "__main__":
-    # Command line argument parser for developer diagnostics
     import argparse
-    parser = argparse.ArgumentParser(description="Pinterest Daily Affiliate Pin Generator")
+    parser = argparse.ArgumentParser(description="Pinterest Daily Affiliate Pin Generator v3.0")
     parser.add_argument("--url", type=str, help="Manually run a single Amazon URL override")
-    parser.add_argument("--test-scrape", type=str, help="Test scraping an Amazon URL and download image")
-    parser.add_argument("--test-poster", type=str, help="Test generating ad copy and layout from local image")
-    parser.add_argument("--count", type=int, default=1, help="Number of successful pins to generate in this run")
-    
+    parser.add_argument("--test-scrape", type=str, help="Test scraping an Amazon URL")
+    parser.add_argument("--test-poster", type=str, help="Test generating a poster from a local image")
+    parser.add_argument("--count", type=int, default=1, help="Number of successful pins to publish")
     args = parser.parse_args()
-    
+
     if args.test_scrape:
         scraper = AmazonScraper()
         res = scraper.scrape_product(args.test_scrape)
-        print(f"Scrape completed. Title: {res['title']}, Image: {res['image_path']}")
+        print(f"Scrape done. Title: {res['title']}, Image: {res['image_path']}")
         sys.exit(0)
-        
+
     if args.test_poster:
         generator = PosterGenerator()
-        ad_copy, poster = generator.process_url(args.test_poster, "Test Fashion Outfit", "Luxury fabric, elegant fitting, comfortable sleeves.")
-        print(f"Poster completed. Output: {poster}")
+        ad_copy, poster = generator.process_url(args.test_poster, "Test Fashion Outfit", "Luxury fabric.")
+        print(f"Poster done: {poster}")
         sys.exit(0)
-        
-    # Standard run
+
     main(args.url, args.count)
