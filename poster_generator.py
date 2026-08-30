@@ -58,6 +58,8 @@ def load_config():
 
 def clean_ascii(text):
     """Strips non-ascii chars to avoid missing glyphs on PIL text rendering."""
+    if not text:
+        return ""
     return re.sub(r'[^\x20-\x7E]', '', text).strip()
 
 def download_font_if_missing(name, url):
@@ -79,13 +81,11 @@ class PosterGenerator:
     def __init__(self):
         self.config = load_config()
         self.gemini_key = os.environ.get("GEMINI_API_KEY") or self.config.get("gemini_api_key", "")
-        self.openai_key = os.environ.get("OPENAI_API_KEY") or self.config.get("openai_api_key", "")
-        
         if not self.gemini_key:
             raise ValueError("GEMINI_API_KEY is not configured in config.json or environment variables.")
         self.genai_client = genai.Client(api_key=self.gemini_key)
         
-        # Download fonts
+        # Download required fonts
         self.header_bold_font_path = download_font_if_missing("PlayfairDisplay-Bold.ttf", HEADER_BOLD_FONT_URL)
         self.header_regular_font_path = download_font_if_missing("PlayfairDisplay-Regular.ttf", HEADER_REGULAR_FONT_URL)
         self.header_italic_font_path = download_font_if_missing("PlayfairDisplay-Italic.ttf", HEADER_ITALIC_FONT_URL)
@@ -113,8 +113,8 @@ class PosterGenerator:
         return ImageFont.load_default()
 
     def generate_ad_copy(self, product_image_path, title, details, price=""):
-        """Sends product image and info to Gemini to generate high-CTR organic Pinterest copy."""
-        print("Analyzing garment with Gemini for high-CTR organic Pinterest copywriting...")
+        """Sends product image and info to Gemini to generate high-performing viral lookbook copy."""
+        print("Analyzing garment with Gemini for high-conversion viral lookbook editorial copy...")
         
         with open(product_image_path, "rb") as f:
             image_data = f.read()
@@ -132,20 +132,24 @@ Product Title: {title}
 Product Details: {details}
 Product Price: {price}
 
-You are a top viral Pinterest fashion lookbook creator.
-Generate organic, high-engagement Pinterest content that feels like an authentic aesthetic fashion post, NOT an advertisement.
+You are an art director and copywriter for a luxury fashion editorial lookbook (like Zara, Massimo Dutti, or Vogue).
+Generate editorial content matching the exact aesthetic of our top viral pins (e.g. 'Effortless Sophistication: Chic Houndstooth Cowl Neck Top for Everyday Elegance').
 
 Available Pinterest Boards:
 {boards_list}
 
-Select the SINGLE best matching board from the list above based on the garment style (ethnic/kurti -> Indian/Desi boards; casual/minimal dresses -> Minimal/Korean/Vacation boards).
+Select the SINGLE best matching board from the list above based on the garment style (ethnic/kurti -> Indian/Desi boards; dresses -> Korean/Dress/Vacation boards; neutral essentials -> Minimal/Neutral boards).
 
 Output strictly in raw JSON format:
 {{
-    "aesthetic_hook": "Short aesthetic title in title case or lowercase (2-4 words, e.g. 'Effortless Earthy Chic', 'The Viral Linen Dress', 'Minimalist Summer Styling')",
-    "subheading": "Concise 3-5 word garment descriptor (e.g. 'Sleeveless Kurta & Palazzo Set', 'Tiered Floral Midi Dress', 'Cotton Blend Co-Ord Set')",
-    "curator_tag": "Aesthetic capsule tag for the top corner (e.g. 'OUTFIT INSPO 2026', 'SUMMER LOOKBOOK', 'CASUAL CHIC', 'DESI STYLE INSPO')",
-    "pin_title": "High-CTR, human Pinterest search title (max 75 chars). Format: [Aesthetic Hook / Outfit Inspo] | [Garment Name]. Do NOT include long Amazon keyword lists, brand names, or multiple pipes.",
+    "headline_word1": "First luxury headline word in Title Case (e.g. 'Effortless', 'Timeless', 'Understated', 'Modern')",
+    "headline_word2": "Second luxury headline word to be rendered in elegant cursive script (e.g. 'Sophistication', 'Elegance', 'Simplicity', 'Grace', 'Chic')",
+    "tagline": "3-word punchy aesthetic descriptor separated by dots (e.g. 'Soft. Stylish. Timeless.', 'Breezy. Chic. Versatile.', 'Refined. Minimal. Effortless.')",
+    "sub_desc": "Short, evocative 1-sentence description (max 50 chars, e.g. 'Designed to elevate your every day.')",
+    "feature_title": "Key garment/fabric feature (2-4 words, e.g. 'Breathable Rayon Viscose', 'Soft Spun Knit Fabric', 'Relaxed Straight Silhouette')",
+    "feature_sub": "Benefit callout for the feature (e.g. 'for All-Day Comfort', 'with Flattering Fluid Drape', 'for Easy Day-to-Night Wear')",
+    "accent_color": "Hex color that matches the garment's palette (e.g. warm caramel '#8A6447', forest '#2E5B3C', navy '#2A3F54', berry '#6B2D42')",
+    "pin_title": "High-CTR, viral Pinterest title (max 75 chars). Format: [Headline Word 1] [Headline Word 2]: [Chic Garment Name] for [Occasion/Style Inspo]. Do NOT include long Amazon keyword lists, brand names, or multiple pipes.",
     "pin_description": "Engaging micro-blog description written in an inspiring fashion curator voice (150-250 chars). Describe the silhouette, fabric feel, occasions to wear, and quick styling advice (shoes/bag). End with a clear call to action: 'Tap link to view details & shop this look on Amazon ✨ Save to your board for inspo 📌'. Include 6-8 targeted hashtags like #outfitinspo #chiclook #summerfashion #kurtaset #stylingideas #amazonfinds.",
     "board_name": "Must be the exact board name chosen from the Available Pinterest Boards list above"
 }}
@@ -176,111 +180,177 @@ Output strictly in raw JSON format:
             
         try:
             ad_copy = json.loads(response.text.strip())
-            print(f"Generated Organic Hook: '{ad_copy.get('aesthetic_hook')}'")
+            print(f"Generated Headline: '{ad_copy.get('headline_word1')} {ad_copy.get('headline_word2')}'")
             print(f"Mapped to Board: '{ad_copy.get('board_name')}'")
             return ad_copy
         except Exception as e:
             print(f"Error parsing Gemini response: {e}")
             return {
-                "aesthetic_hook": "Effortless Chic Look",
-                "subheading": "Casual Summer Outfit",
-                "curator_tag": "OUTFIT INSPO 2026",
-                "pin_title": "Effortless Summer Outfit Inspo | Casual Chic Style",
+                "headline_word1": "Effortless",
+                "headline_word2": "Sophistication",
+                "tagline": "Soft. Stylish. Timeless.",
+                "sub_desc": "Designed to elevate your every day.",
+                "feature_title": "Soft Breathable Fabric",
+                "feature_sub": "for All-Day Comfort",
+                "accent_color": "#8A6447",
+                "pin_title": "Effortless Sophistication: Everyday Chic Outfit Ideas",
                 "pin_description": "Effortless daily style for work, weekend brunches, or coffee dates ✨ Tap link to shop this exact look on Amazon! 🤍 #outfitinspo #summerfashion #chicstyle",
                 "board_name": "Capsule Wardrobe Essentials"
             }
 
     def compose_poster(self, ad_copy, product_image_path):
         """
-        Assembles an organic, aesthetic Pinterest pin (1000x1500 px, 2:3 ratio).
-        High-impact full-bleed hero visual with floating frosted glass typography card.
+        Assembles a viral lookbook pin matching the exact aesthetic of viral_top.jpg:
+        - Full-height model presentation on the right
+        - Seamless editorial atmosphere on the left with clean negative space
+        - Luxury typography (Playfair Regular + Cursive Italic)
+        - Thin divider with decorative dot
+        - Tagline & lifestyle description
+        - Bottom-left curved arch with delicate circular emblem & fabric/comfort callout
+        - High-intent Amazon shopping CTA
         """
-        print("Composing high-converting organic Pinterest pin...")
+        print("Composing viral lookbook pin (Effortless Sophistication aesthetic)...")
         W, H = 1000, 1500
         
         orig = Image.open(product_image_path).convert("RGB")
         pw, ph = orig.size
 
-        # Cover scaling: crop-to-fill 1000x1500
-        ratio = max(W / pw, H / ph)
+        # Resize product photo to fill canvas height
+        ratio = H / ph
         nw, nh = int(pw * ratio), int(ph * ratio)
-        resized = orig.resize((nw, nh), Image.Resampling.LANCZOS)
-        cx = (nw - W) // 2
-        cy = (nh - H) // 2
-        poster = resized.crop((cx, cy, cx + W, cy + H))
+        resized_photo = orig.resize((nw, nh), Image.Resampling.LANCZOS)
 
-        # Soft dark ambient gradient at bottom so the badge stands out gracefully
-        gradient = Image.new("RGBA", (W, 380), (0, 0, 0, 0))
-        g_draw = ImageDraw.Draw(gradient)
-        for y in range(380):
-            alpha = int(135 * (y / 380.0) ** 1.6)
-            g_draw.line([(0, y), (W, y)], fill=(18, 14, 12, alpha))
-        poster.paste(gradient, (0, H - 380), gradient)
-
-        # Sanitize text for crisp rendering on PIL
-        hook_raw = ad_copy.get("aesthetic_hook") or "Effortless Chic"
-        sub_raw = ad_copy.get("subheading") or "Casual Daily Outfit"
-        tag_raw = ad_copy.get("curator_tag") or "OUTFIT INSPO 2026"
-
-        hook_clean = clean_ascii(hook_raw)
-        sub_clean = clean_ascii(sub_raw).upper()
-        tag_clean = clean_ascii(tag_raw).upper()
-
-        font_hook = self.get_font(self.header_italic_font_path, 42, ["georgiai.ttf", "timesi.ttf"])
-        font_sub = self.get_font(self.text_bold_font_path, 15, ["segoeuib.ttf", "arialbd.ttf"])
-        font_tag = self.get_font(self.text_bold_font_path, 12, ["segoeuib.ttf", "arialbd.ttf"])
-
-        draw = ImageDraw.Draw(poster)
-
-        # Measure text for the floating badge
-        hook_bbox = draw.textbbox((0, 0), hook_clean, font=font_hook)
-        hw, hh = hook_bbox[2] - hook_bbox[0], hook_bbox[3] - hook_bbox[1]
-
-        sub_full = f"{sub_clean}  •  TAP TO SHOP"
-        sub_bbox = draw.textbbox((0, 0), sub_full, font=font_sub)
-        sw, sh = sub_bbox[2] - sub_bbox[0], sub_bbox[3] - sub_bbox[1]
-
-        badge_w = min(max(hw, sw) + 80, W - 80)
-        badge_h = hh + sh + 46
-        badge_x = (W - badge_w) // 2
-        badge_y = H - badge_h - 60
-
-        # Floating frosted glassmorphic card
-        glass = Image.new("RGBA", (badge_w, badge_h), (0, 0, 0, 0))
-        gdraw = ImageDraw.Draw(glass)
-        gdraw.rounded_rectangle(
-            [0, 0, badge_w, badge_h],
-            radius=22,
-            fill=(255, 253, 250, 235),
-            outline=(215, 205, 195, 210),
-            width=2
+        # Sample edge color for seamless background
+        corner_pixel = resized_photo.getpixel((15, 15))
+        bg_color = (
+            min(250, max(232, corner_pixel[0])),
+            min(247, max(228, corner_pixel[1])),
+            min(242, max(222, corner_pixel[2]))
         )
-        poster.paste(glass, (badge_x, badge_y), glass)
+        poster = Image.new("RGB", (W, H), bg_color)
 
-        # Draw typography inside glass badge
+        # Center the subject gracefully around x=720
+        if nw >= W:
+            photo_x = max(W - nw, min(0, 720 - (nw // 2)))
+        else:
+            photo_x = max(0, W - nw - 20)
+        poster.paste(resized_photo, (photo_x, 0))
+
+        # Feather the left edge so typography has 100% clean background
+        feather_w = 460
+        feather_mask = Image.new("L", (feather_w, H), 0)
+        f_draw = ImageDraw.Draw(feather_mask)
+        for x in range(feather_w):
+            alpha = int(255 * (1.0 - (x / float(feather_w))) ** 1.7)
+            f_draw.line([(x, 0), (x, H)], fill=alpha)
+
+        solid_left = Image.new("RGB", (feather_w, H), bg_color)
+        poster.paste(solid_left, (0, 0), feather_mask)
+
         draw = ImageDraw.Draw(poster)
-        draw.text((badge_x + (badge_w - hw) // 2, badge_y + 14), hook_clean, fill="#2A201C", font=font_hook)
-        draw.text((badge_x + (badge_w - sw) // 2, badge_y + 14 + hh + 10), sub_full, fill="#7A685D", font=font_sub)
 
-        # Minimal curator watermark in top-left
-        tag_bbox = draw.textbbox((0, 0), tag_clean, font=font_tag)
-        tw, th = tag_bbox[2] - tag_bbox[0], tag_bbox[3] - tag_bbox[1]
-        tag_glass = Image.new("RGBA", (tw + 26, th + 14), (0, 0, 0, 0))
-        tdraw = ImageDraw.Draw(tag_glass)
-        tdraw.rounded_rectangle([0, 0, tw + 26, th + 14], radius=10, fill=(255, 255, 255, 215))
-        poster.paste(tag_glass, (40, 40), tag_glass)
+        # Typography & Copy
+        w1 = clean_ascii(ad_copy.get("headline_word1", "Effortless"))
+        w2 = clean_ascii(ad_copy.get("headline_word2", "Sophistication"))
+        tagline = clean_ascii(ad_copy.get("tagline", "Soft. Stylish. Timeless."))
+        sub_desc = clean_ascii(ad_copy.get("sub_desc", "Designed to elevate your every day."))
+        feat_title = clean_ascii(ad_copy.get("feature_title", "Soft Spun Fabric"))
+        feat_sub = clean_ascii(ad_copy.get("feature_sub", "for All-Day Comfort"))
+
+        # Colors
+        primary_color = "#362920"
+        accent_color = ad_copy.get("accent_color", "#8A6447")
+        if not (isinstance(accent_color, str) and accent_color.startswith("#") and len(accent_color) in (4, 7)):
+            accent_color = "#8A6447"
+        muted_color = "#6E5B4F"
+
+        font_w1 = self.get_font(self.header_regular_font_path, 72, ["georgia.ttf", "times.ttf"])
+        font_w2 = self.get_font(self.header_italic_font_path, 84, ["georgiai.ttf", "timesi.ttf"])
+        font_tagline = self.get_font(self.header_regular_font_path, 22, ["georgia.ttf", "times.ttf"])
+        font_sub_desc = self.get_font(self.text_regular_font_path, 15, ["segoeui.ttf", "arial.ttf"])
+        font_badge_title = self.get_font(self.text_bold_font_path, 14, ["segoeuib.ttf", "arialbd.ttf"])
+        font_badge_sub = self.get_font(self.text_regular_font_path, 13, ["segoeui.ttf", "arial.ttf"])
+
+        left_x = 75
+        cur_y = 130
+
+        # Word 1: "Effortless"
+        draw.text((left_x, cur_y), w1, fill=primary_color, font=font_w1)
+        w1_bbox = draw.textbbox((0, 0), w1, font=font_w1)
+        cur_y += (w1_bbox[3] - w1_bbox[1]) + 6
+
+        # Word 2: "Sophistication" (cursive script)
+        draw.text((left_x, cur_y), w2, fill=accent_color, font=font_w2)
+        w2_bbox = draw.textbbox((0, 0), w2, font=font_w2)
+        cur_y += (w2_bbox[3] - w2_bbox[1]) + 22
+
+        # Divider line with small dot
+        line_w = 210
+        draw.line([(left_x, cur_y), (left_x + line_w, cur_y)], fill="#C5B5A5", width=1)
+        draw.ellipse([left_x + line_w - 6, cur_y - 3, left_x + line_w, cur_y + 3], fill=accent_color)
+        cur_y += 30
+
+        # Tagline
+        draw.text((left_x, cur_y), tagline, fill=accent_color, font=font_tagline)
+        cur_y += 38
+
+        # Sub-description
+        sub_words = sub_desc.split()
+        sub_line = []
+        for word in sub_words:
+            sub_line.append(word)
+            if draw.textbbox((0, 0), " ".join(sub_line), font=font_sub_desc)[2] > 260:
+                sub_line.pop()
+                draw.text((left_x, cur_y), " ".join(sub_line), fill=muted_color, font=font_sub_desc)
+                cur_y += 22
+                sub_line = [word]
+        if sub_line:
+            draw.text((left_x, cur_y), " ".join(sub_line), fill=muted_color, font=font_sub_desc)
+
+        # Bottom-left curved arch badge
+        arch_w = 340
+        arch_h = 320
+        arch_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        a_draw = ImageDraw.Draw(arch_overlay)
+
+        arch_bg_color = (
+            min(255, bg_color[0] + 12),
+            min(255, bg_color[1] + 10),
+            min(255, bg_color[2] + 8),
+            230
+        )
+        a_draw.pieslice([-100, H - arch_h * 2 + 100, arch_w * 2 - 100, H + 100], 180, 270, fill=arch_bg_color)
+        a_draw.arc([-100, H - arch_h * 2 + 100, arch_w * 2 - 100, H + 100], 180, 270, fill=(215, 202, 190, 200), width=1)
+        poster.paste(arch_overlay, (0, 0), arch_overlay)
 
         draw = ImageDraw.Draw(poster)
-        draw.text((53, 47), tag_clean, fill="#3D3028", font=font_tag)
 
-        # Save poster
+        # Delicate circular emblem
+        icon_cx = left_x + 20
+        icon_cy = H - 195
+        ir = 26
+        draw.ellipse([icon_cx - ir, icon_cy - ir, icon_cx + ir, icon_cy + ir], outline=accent_color, width=1)
+        draw.line([(icon_cx - 10, icon_cy + 10), (icon_cx + 10, icon_cy - 10)], fill=accent_color, width=1)
+        draw.arc([icon_cx - 8, icon_cy - 12, icon_cx + 12, icon_cy + 8], 135, 315, fill=accent_color, width=1)
+        draw.arc([icon_cx - 12, icon_cy - 8, icon_cx + 8, icon_cy + 12], 315, 135, fill=accent_color, width=1)
+
+        # Feature title & sub
+        feat_y = icon_cy + 40
+        draw.text((left_x, feat_y), feat_title, fill=primary_color, font=font_badge_title)
+        draw.text((left_x, feat_y + 22), feat_sub, fill=muted_color, font=font_badge_sub)
+
+        # Minimal CTA line
+        draw.line([(left_x, feat_y + 52), (left_x + 150, feat_y + 52)], fill="#C5B5A5", width=1)
+        cta_font = self.get_font(self.text_bold_font_path, 10, ["segoeuib.ttf", "arialbd.ttf"])
+        draw.text((left_x, feat_y + 60), "TAP TO SHOP LOOK • AMAZON", fill=accent_color, font=cta_font)
+
         output_path = os.path.join(TEMP_DIR, "final_pinterest_ad.png")
         poster.save(output_path, "PNG", quality=95)
-        print(f"Successfully generated Organic Pinterest Pin at: {output_path}")
+        print(f"Successfully generated Viral Lookbook Pin at: {output_path}")
         return output_path
 
     def process_url(self, image_path, title, details, price=""):
-        """E2E workflow for generating organic copy and aesthetic pin."""
+        """E2E workflow for generating viral lookbook copy and pin."""
         copy = self.generate_ad_copy(image_path, title, details, price)
         poster_path = self.compose_poster(copy, image_path)
         return copy, poster_path
